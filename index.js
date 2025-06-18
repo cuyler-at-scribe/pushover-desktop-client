@@ -33,7 +33,7 @@ var Client = function (settings) {
     this.settings.apiPath = settings.apiPath || '/1'
     this.settings.keepAliveTimeout = settings.keepAliveTimeout || 60000
 
-    this.notifier = new Notification()
+    this.notifier = settings.notifier || Notification
     this.https = settings.https || https
     this.logger = settings.logger || console
 }
@@ -63,6 +63,8 @@ Client.prototype.connect = function () {
     })
 
     wsClient.on('message', function (event) {
+        console.log('cuyler: rcvd new message event')
+
         var message = event.toString('utf8')
 
         //New message
@@ -135,6 +137,7 @@ Client.prototype.reconnect = function () {
  * Notifications will be generated for any new messages
  */
 Client.prototype.refreshMessages = function () {
+    console.log('cuyler: refreshMessages')
     var self = this
 
     self.logger.log('Refreshing messages')
@@ -164,6 +167,7 @@ Client.prototype.refreshMessages = function () {
 
             try {
                 var payload = JSON.parse(finalData)
+                console.log('cuyler: payload', payload)
                 self.notify(payload.messages)
             } catch (error) {
                 self.logger.error('Failed to parse message payload')
@@ -188,11 +192,13 @@ Client.prototype.refreshMessages = function () {
  * @param {Client~PushoverMessage[]} messages A list of pushover message objects
  */
 Client.prototype.notify = function (messages) {
+    console.log('cuyler: client notify')
     var self = this,
         lastMessage,
         useMessages = messages
 
     var next = function () {
+        console.log('cuyler: next')
         var message = useMessages.shift(),
             icon
 
@@ -212,8 +218,9 @@ Client.prototype.notify = function (messages) {
         }
 
         try {
+            console.log('cuyler: fetchImage')
             self.fetchImage(icon, function (imageFile) {
-                var payload = {appIcon: imageFile}
+                var payload = {appIcon: imageFile, icon: imageFile}
 
                 payload.title = message.title || message.app
 
@@ -224,6 +231,7 @@ Client.prototype.notify = function (messages) {
                 self.logger.log('Sending notification for', message.id)
 
                 try {
+                    console.log('cuyler: notifier notify')
                     self.notifier.notify(payload, function (error) {
                         if (error) {
                             self.logger.error('Returned error while trying to send the notification')
@@ -240,6 +248,7 @@ Client.prototype.notify = function (messages) {
                 next()
             })
         } catch (error) {
+            console.log('cuyler: caught error while trying to fetch the image')
             self.logger.error('Caught error while trying to fetch the image')
             self.logger.error(error.stack || error)
             next()
