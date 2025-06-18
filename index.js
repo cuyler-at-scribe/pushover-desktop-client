@@ -4,6 +4,7 @@ var ws = require('ws')
   , https = require('https')
   , Notification = require('node-notifier')
   , path = require('path')
+  , os = require('os')
 
 /**
  * Handles everything for showing Pushover notifications, just call #connect()
@@ -21,6 +22,7 @@ var ws = require('ws')
  * @param {Object} [settings.notifier=Notification] Notification subsystem to use, mostly here for test support
  * @param {Object} [settings.https=https] https lib to use, mostly here for test support
  * @param {Object} [settings.logger=console] logger to use, mostly here for test support
+ * @param {String} [settings.stateFile] Path to the state file for persistence
  *
  * @constructor
  */
@@ -33,9 +35,40 @@ var Client = function (settings) {
     this.settings.apiPath = settings.apiPath || '/1'
     this.settings.keepAliveTimeout = settings.keepAliveTimeout || 60000
 
+    // Maximum time to wait for any HTTPS request before failing (ms)
+    this.settings.requestTimeout = settings.requestTimeout || 10000
+
+    // Reduced default poll interval to 30 s so we re-sync faster if a socket
+    // event is missed.
+    this.settings.pollInterval = settings.pollInterval || 30000
+
     this.notifier = settings.notifier || Notification
     this.https = settings.https || https
     this.logger = settings.logger || console
+
+    // --- Persistence for highest processed message (item 2) ---
+    this.stateFile = settings.stateFile || path.join(
+        settings.imageCache || process.cwd(),
+        '.pushover_state.json'
+    )
+
+    try {
+        var persisted = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'))
+        this._headFromState = typeof persisted.highest === 'number' ? persisted.highest : null
+    } catch (e) {
+        this._headFromState = null
+    }
+
+    // helper for saving state
+    this._saveLastProcessed = function (id) {
+        if (!id) { return }
+        try {
+            fs.writeFileSync(this.stateFile, JSON.stringify({ highest: id }), 'utf8')
+        } catch (err) {
+            // Non-fatal: just log
+            this.logger.error('Failed to persist state file', err.stack || err)
+        }
+    }
 }
 
 module.exports = Client
@@ -56,10 +89,21 @@ Client.prototype.connect = function () {
     self._lastConnection = Date.now()
 
     wsClient.on('open', function () {
+        // If we crashed before deleting messages from the server, clean up first
+        if (self._headFromState) {
+            self.updateHead({ id: self._headFromState })
+        }
+
         self.refreshMessages()
         self.logger.log('Websocket client connected, waiting for new messages')
         self.resetKeepAlive()
         wsClient.send('login:' + self.settings.deviceId + ':' + self.settings.secret + '\n')
+
+        // Kick off a periodic sync in case network hiccups drop websocket events
+        clearInterval(self._pollInterval)
+        self._pollInterval = setInterval(function () {
+            self.refreshMessages()
+        }, self.settings.pollInterval)
     })
 
     wsClient.on('message', function (event) {
@@ -67,19 +111,37 @@ Client.prototype.connect = function () {
 
         var message = event.toString('utf8')
 
-        //New message
-        if (message === '!') {
-            self.logger.log('Got new message event')
-            return self.refreshMessages()
+        switch (message) {
+            // New message available – trigger sync
+            case '!':
+                self.logger.log('Got new message event')
+                return self.refreshMessages()
 
-        //Keep alive message
-        } else if (message === '#') {
-            self.resetKeepAlive()
-            return
+            // Keep-alive ping
+            case '#':
+                self.resetKeepAlive()
+                return
+
+            // Reload request – drop and reconnect
+            case 'R':
+                self.logger.warn('Server requested reload – reconnecting')
+                return self.reconnect()
+
+            // Permanent error – log and attempt a manual sync so we don't miss data
+            case 'E':
+                self.logger.error('Server sent error frame – performing manual sync')
+                self.refreshMessages()
+                return
+
+            // Another session logged in – 'A'. Follow current behaviour: reconnect later
+            case 'A':
+                self.logger.warn('Session closed because of another login (A)')
+                return self.reconnect()
+
+            default:
+                self.logger.error('Unknown message frame:', message)
+                self.reconnect()
         }
-
-        self.logger.error('Unknown message:', message)
-        self.reconnect()
     })
 
     wsClient.on('error', function (error) {
@@ -125,6 +187,8 @@ Client.prototype.reconnect = function () {
         self.wsClient.terminate()
         self.wsClient = null
     } catch (e) {}
+
+    clearInterval(self._pollInterval)
 
     self._reconnect = setTimeout(function () {
         clearTimeout(self._reconnect)
@@ -175,6 +239,11 @@ Client.prototype.refreshMessages = function () {
             }
         })
 
+        // Fail fast on very bad connectivity – allows retry via next poll cycle
+        request.setTimeout(self.settings.requestTimeout, function () {
+            self.logger.error('Timeout while refreshing messages (>' + self.settings.requestTimeout + 'ms)')
+            request.abort()
+        })
     })
 
     request.on('error', function (error) {
@@ -192,22 +261,21 @@ Client.prototype.refreshMessages = function () {
  * @param {Client~PushoverMessage[]} messages A list of pushover message objects
  */
 Client.prototype.notify = function (messages) {
-    console.log('cuyler: client notify')
+    // Track the last message that was *successfully* notified so we only
+    // advance the server head once we know the user has seen it.
     var self = this,
-        lastMessage,
+        lastSuccessful = null,
         useMessages = messages
 
     var next = function () {
-        console.log('cuyler: next')
         var message = useMessages.shift(),
             icon
 
+        // No more messages – advance head to the last confirmed success (if any)
         if (!message) {
-            self.updateHead(lastMessage)
+            self.updateHead(lastSuccessful)
             return
         }
-
-        lastMessage = message
 
         if (message.icon) {
             icon = message.icon + '.png'
@@ -218,9 +286,14 @@ Client.prototype.notify = function (messages) {
         }
 
         try {
-            console.log('cuyler: fetchImage')
             self.fetchImage(icon, function (imageFile) {
-                var payload = {appIcon: imageFile, icon: imageFile}
+                var payload = {}
+
+                if (imageFile) {
+                    // Only include icon fields when we actually have an image path
+                    payload.appIcon = imageFile
+                    payload.icon = imageFile
+                }
 
                 payload.title = message.title || message.app
 
@@ -231,24 +304,26 @@ Client.prototype.notify = function (messages) {
                 self.logger.log('Sending notification for', message.id)
 
                 try {
-                    console.log('cuyler: notifier notify')
                     self.notifier.notify(payload, function (error) {
                         if (error) {
                             self.logger.error('Returned error while trying to send the notification')
                             self.logger.error(error.stack || error)
+                        } else {
+                            // Mark this message as successfully processed
+                            lastSuccessful = message
+                            self._saveLastProcessed(message.id)
                         }
+
+                        // Continue with the next message regardless of success
+                        next()
                     })
                 } catch (error) {
                     self.logger.error('Caught error while trying to send the notification')
                     self.logger.error(error.stack || error)
                     next()
-                    return
                 }
-
-                next()
             })
         } catch (error) {
-            console.log('cuyler: caught error while trying to fetch the image')
             self.logger.error('Caught error while trying to fetch the image')
             self.logger.error(error.stack || error)
             next()
@@ -304,6 +379,12 @@ Client.prototype.fetchImage = function (imageName, callback) {
             callback(imageFile)
         })
 
+        // Fail fast on very bad connectivity – allows retry via next poll cycle
+        request.setTimeout(self.settings.requestTimeout, function () {
+            self.logger.error('Timeout while caching image', imageName)
+            request.abort()
+            callback(false)
+        })
     })
 
     request.on('error', function (error) {
