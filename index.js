@@ -304,6 +304,11 @@ Client.prototype.notify = function (messages) {
                     payload.message = message.message
                 }
 
+                // Pass priority through so the Electron layer can colour-code
+                if (typeof message.priority !== 'undefined') {
+                    payload.priority = message.priority
+                }
+
                 self.logger.log('Sending notification for', message.id)
 
                 try {

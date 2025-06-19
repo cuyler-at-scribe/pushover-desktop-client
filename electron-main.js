@@ -47,6 +47,23 @@ function createNotifier() {
         timeout: 0, // never auto-dismiss
         focus: false   // don\'t steal focus
       };
+
+      // -----------------------------------------------------------------
+      // Determine accent colour from Pushover priority so we can style the
+      // toast (spine + glow) inside the renderer.
+      //   priority >=1   → Critical   → crimson
+      //   priority  0    → Normal     → blue
+      //   priority <=-1  → Low / info → green
+      // -----------------------------------------------------------------
+      const prio = typeof payload.priority === 'number' ? payload.priority : 0;
+      let accentColour = '#2E90FA'; // default (normal)
+      if (prio >= 1) {
+        accentColour = '#E53935'; // crimson for high/critical
+      } else if (prio <= -1) {
+        accentColour = '#39B54A'; // green for low/info
+      }
+      toast.accentColor = accentColour;
+
       // build htmlFile to bypass electron-toaster bug
       const toasterHtmlPath = path.join(require.resolve('electron-toaster'), '..', 'toaster.html');
       toast.htmlFile = `file://${toasterHtmlPath}?title=${encodeURIComponent(payload.title||'')}&message=${encodeURIComponent((payload.message||'').replace(/<br>/g,' '))}&detail=&timeout=${toast.timeout}`;
@@ -169,6 +186,33 @@ Toaster.prototype.init = function(hostWindow) {
       const [w, h] = bw.getSize();
       bw.setPosition(workAreaSize.width - w - 4, workAreaSize.height - h - 4);
       bw.showInactive();
+
+      // Inject styling & pulsating glow once content is ready
+      const accent = msg.accentColor || '#2E90FA';
+      const css = `body,html{background:#ffffff;color:#000000; margin:0; padding:0;}
+        /* Main card */
+        table#content{width:100%;height:100%;border-top:1px solid #E0E0E0;border-right:1px solid #E0E0E0;border-bottom:1px solid #E0E0E0;border-left:none;animation:pulseGlow 3s ease-in-out infinite;border-collapse:collapse;box-shadow:0 0 0 0 ${accent};border-spacing:0; margin:0; padding:0;}
+        /* Icon background */
+        td:first-child{background-color:${accent}!important;width:56px;padding:0;animation:pulseBG 1.5s ease-in-out infinite; margin:0; padding:0;}
+        /* Under-title rule */
+        hr{height:2px;border:0;background:${accent};opacity:0.25; margin:0; padding:0;}
+        /* Pulsating glow – smoother (≈ sine) */
+        @keyframes pulseGlow{
+          0%,100% {box-shadow:0 0 0 0 ${accent};}
+          25%     {box-shadow:0 0 4px 2px ${accent};}
+          50%     {box-shadow:0 0 12px 6px ${accent};}
+          75%     {box-shadow:0 0 4px 2px ${accent};}
+        }
+        @keyframes pulseBG{
+          0%,100% {filter:brightness(1);}
+          25%     {filter:brightness(1.2);}
+          50%     {filter:brightness(1.6);} 
+          75%     {filter:brightness(1.2);} 
+        }
+        /* Accent stripe that also covers rounded corners */
+        body::before{content:'';position:fixed;left:0;top:0;width:56px;height:100%;background:${accent};animation:pulseBG 1.5s ease-in-out infinite;pointer-events:none;}
+      `;
+      bw.webContents.insertCSS(css).catch(()=>{});
 
       activeToasts.push(bw);
       relayout(workAreaSize.height);
