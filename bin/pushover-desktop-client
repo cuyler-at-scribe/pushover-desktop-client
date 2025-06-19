@@ -1,31 +1,43 @@
 #!/usr/bin/env node
 
-var PushoverDesktopClient = require('../index.js')
-  , xdg = require('xdg')
-  , mkdirp = require('mkdirp')
-  , settingsPath = process.env.PUSHOVER_SETTINGS_PATH || xdg.basedir.configPath('pushover-dc/settings.json')
+/**
+ * CLI launcher for Pushover Desktop Client (Electron edition)
+ * -----------------------------------------------------------
+ * This wrapper keeps the historical `pushover-desktop-client` binary
+ * but now simply forwards execution to the Electron entry-point so that
+ * both `$ npm run pushover` and `$ pushover-desktop-client` share the
+ * exact same code path.
+ */
 
+const { spawn } = require('child_process');
+const path = require('path');
+
+// Attempt to resolve the Electron executable provided by the `electron` npm package.
+// `require('electron')` returns the absolute path to the binary when invoked from Node.
+let electronBinary;
 try {
-    console.log('Attempting to load settings from', settingsPath)
-    settings = require(settingsPath)
-} catch (error) {
-    settings = {}
-    //Ignoring the error, hopefully we have env vars
+  electronBinary = require('electron');
+  if (typeof electronBinary !== 'string' || !electronBinary.length) {
+    throw new Error('Unexpected electron module format');
+  }
+} catch (err) {
+  console.error('Error: Electron runtime not found. Please install it with:\n    npm install --save electron');
+  console.error(err && err.message ? err.message : err);
+  process.exit(1);
 }
 
-settings.deviceId = process.env.PUSHOVER_DEVICE_ID || settings.deviceId
-settings.secret = process.env.PUSHOVER_SECRET || settings.secret
-settings.imageCache = process.env.PUSHOVER_IMAGE_CACHE || settings.imageCache || xdg.basedir.cachePath('pushover-dc')
+// Path to the Electron main process file shipped with this package.
+const electronMain = path.join(__dirname, '..', 'electron-main.js');
 
-if (!settings.deviceId || !settings.secret) {
-    console.error('A secret and deviceId must be provided!')
-    console.error('View the README at https://github.com/nbrownus/pushover-desktop-client for more info')
-    process.exit(1)
-}
+// Pass through any CLI arguments after the script name (e.g. --setup).
+const child = spawn(electronBinary, [electronMain, ...process.argv.slice(2)], {
+  stdio: 'inherit',
+});
 
-console.log('Initializing image cache directory', settings.imageCache)
-mkdirp.sync(settings.imageCache, '0755')
-
-var pdc = new PushoverDesktopClient(settings)
-
-pdc.connect()
+child.on('exit', (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal);
+  } else {
+    process.exit(code);
+  }
+});
