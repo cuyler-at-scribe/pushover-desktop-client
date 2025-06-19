@@ -40,7 +40,7 @@ var Client = function (settings) {
 
     // Reduced default poll interval to 30 s so we re-sync faster if a socket
     // event is missed.
-    this.settings.pollInterval = settings.pollInterval || 30000
+    this.settings.pollInterval = settings.pollInterval || 100000
 
     this.notifier = settings.notifier || Notification
     this.https = settings.https || https
@@ -77,10 +77,6 @@ var Client = function (settings) {
             this.logger.error('Failed to persist state file', err.stack || err)
         }
     }
-
-    // Used to avoid processing the first "new message" frame received immediately
-    // after logging in, because we already perform an explicit manual sync.
-    this.skipNextBang = false
 }
 
 module.exports = Client
@@ -111,12 +107,6 @@ Client.prototype.connect = function () {
         self.resetKeepAlive()
         wsClient.send('login:' + self.settings.deviceId + ':' + self.settings.secret + '\n')
 
-        // The server typically sends a "!" frame immediately after a successful
-        // login indicating there are messages waiting. Because we have already
-        // triggered an explicit refresh above, that first event would cause
-        // duplicate notifications. Skip the very next "!" frame that arrives.
-        self.skipNextBang = true
-
         // Kick off a periodic sync in case network hiccups drop websocket events
         clearInterval(self._pollInterval)
         self._pollInterval = setInterval(function () {
@@ -132,10 +122,7 @@ Client.prototype.connect = function () {
         switch (message) {
             // New message available – trigger sync
             case '!':
-                if (self.skipNextBang) {
-                    self.skipNextBang = false
-                    return
-                }
+                console.log('cuyler: got new message event')
                 self.logger.log('Got new message event')
                 return self.refreshMessages()
 
