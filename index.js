@@ -209,10 +209,6 @@ Client.prototype.reconnect = function () {
 Client.prototype.refreshMessages = function () {
     var self = this
 
-    // Diagnostic logging for poll cycles
-    var pollStart = Date.now()
-    self.logger.log('[Poll] Refreshing messages at', new Date(pollStart).toISOString())
-
     var options = {
         host: self.settings.apiHost
       , method: 'GET'
@@ -222,12 +218,8 @@ Client.prototype.refreshMessages = function () {
         })
     }
 
-    self.logger.log('[Poll] Request options:', options)
-
     var request = self.https.request(options, function (response) {
         var finalData = ''
-
-        self.logger.log('[Poll] Response statusCode:', response.statusCode)
 
         response.on('data', function (data) {
             finalData += data.toString()
@@ -242,12 +234,7 @@ Client.prototype.refreshMessages = function () {
 
             try {
                 var payload = JSON.parse(finalData)
-                // Detailed payload logging
-                self.logger.log('[Poll] Payload received:', JSON.stringify(payload))
-                if (payload && Array.isArray(payload.messages)) {
-                    var ids = payload.messages.map(function (m) { return m.id })
-                    self.logger.log('[Poll] Message IDs:', ids)
-                }
+                // Parsing complete – proceed to process messages
                 self.notify(payload.messages)
             } catch (error) {
                 self.logger.error('Failed to parse message payload')
