@@ -1,10 +1,8 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const Toaster = require('electron-toaster');
-const xdg = require('xdg');
-const mkdirp = require('mkdirp');
 const PushoverDesktopClient = require('./index');
-const querystring = require('querystring');
+const settingsHelper = require('./lib/settings');
 
 /***************************************************
  * This file bootstraps the existing Pushover client
@@ -45,30 +43,18 @@ function createNotifier() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. utility: loads the same settings logic used by CLI script
+// 3. load settings (runs interactive wizard on first launch)
 // ---------------------------------------------------------------------------
-function loadSettings() {
-  const settingsPath = process.env.PUSHOVER_SETTINGS_PATH || xdg.basedir.configPath('pushover-dc/settings.json');
-  let settings = {};
-  try {
-    console.log('[electron-main] Loading settings from', settingsPath);
-    settings = require(settingsPath);
-  } catch (err) {
-    // ignore, will fallback to env vars
-  }
-
-  settings.deviceId = process.env.PUSHOVER_DEVICE_ID || settings.deviceId;
-  settings.secret    = process.env.PUSHOVER_SECRET    || settings.secret;
-  settings.imageCache = process.env.PUSHOVER_IMAGE_CACHE || settings.imageCache || xdg.basedir.cachePath('pushover-dc');
+async function prepareSettings() {
+  let settings = await settingsHelper.load({ forceSetup: process.argv.includes('--setup'), runWizard: false });
 
   if (!settings.deviceId || !settings.secret) {
-    console.error('A secret and deviceId must be provided!');
-    process.exit(1);
+    // Run Electron modal wizard
+    const runElectronWizard = require('./lib/electronSetup');
+    settings = await runElectronWizard(settings);
   }
-  console.log('[electron-main] Initializing image cache directory', settings.imageCache);
-  mkdirp.sync(settings.imageCache, '0755');
 
-  // inject our notifier replacement
+  // Inject our notifier replacement so index.js uses our Electron toaster
   settings.notifier = createNotifier();
   return settings;
 }
@@ -76,7 +62,7 @@ function loadSettings() {
 // ---------------------------------------------------------------------------
 // 4. create hidden window and launch the Pushover client
 // ---------------------------------------------------------------------------
-function createWindow() {
+async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 440,
     height: 1,
@@ -93,8 +79,10 @@ function createWindow() {
   //   ipcMain.emit('electron-toaster-message', null, test);
   // }, 1000);
 
-  // run the existing logic
-  const pdc = new PushoverDesktopClient(loadSettings());
+  // Load settings (wizard if needed) then run client
+  const settings = await prepareSettings();
+
+  const pdc = new PushoverDesktopClient(settings);
   pdc.connect();
 
   // Optional mock toast for quick dev testing (skip network round-trip)

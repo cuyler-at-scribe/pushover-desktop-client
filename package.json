@@ -26,6 +26,7 @@
       , "xdg": "0.1.1"
       , "electron": "^29.4.0"
       , "electron-toaster": "^2.0.4"
+      , "electron-prompt": "^1.7.0"
     }
   , "devDependencies": {
         "ppunit": "1.0.0"
