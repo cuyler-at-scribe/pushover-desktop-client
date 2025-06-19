@@ -40,7 +40,7 @@ var Client = function (settings) {
 
     // Reduced default poll interval to 30 s so we re-sync faster if a socket
     // event is missed.
-    this.settings.pollInterval = settings.pollInterval || 100000
+    this.settings.pollInterval = settings.pollInterval || 60000
 
     this.notifier = settings.notifier || Notification
     this.https = settings.https || https
