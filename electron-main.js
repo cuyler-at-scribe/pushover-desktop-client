@@ -120,15 +120,23 @@ app.on('window-all-closed', () => {
 // ---------------------------------------------------------------------------
 // Patch electron-toaster bug: duplicated query string => blank content
 // ---------------------------------------------------------------------------
+// Padding (in pixels).
+//  - PADDING_X controls space from the right screen edge.
+//  - PADDING_Y controls space from the bottom screen edge **and** between stacked toasts.
+// Visual feedback showed the bottom margin appeared larger than the right one,
+// so we increase horizontal padding slightly to balance things out.
+const PADDING_X = 16; // right-edge spacing
+const PADDING_Y = 16; // bottom-edge spacing & inter-toast gap
+
 const activeToasts = [];
 function relayout(displayHeight) {
-  let yPos = displayHeight - 4; // bottom padding
+  let yPos = displayHeight - PADDING_Y; // bottom padding
   for (let i = activeToasts.length - 1; i >= 0; i--) {
     const t = activeToasts[i];
-    const [w,h] = t.getSize();
+    const [w, h] = t.getSize();
     yPos -= h;
     t.setPosition(t.getPosition()[0], yPos);
-    yPos -= 4; // gap
+    yPos -= PADDING_Y; // gap between stacked toasts
   }
 }
 
@@ -178,13 +186,17 @@ Toaster.prototype.init = function(hostWindow) {
     }
     let soundTimer;
 
-    // position bottom-right of same display as hostWindow
-    const { workAreaSize } = require('electron').screen.getDisplayNearestPoint({ x: hostWindow.getBounds().x, y: hostWindow.getBounds().y });
+    // Determine display bounds (full screen area) of the monitor hosting the hidden window.
+    // Using `bounds` instead of `workArea` ensures we don't leave an oversized gap caused
+    // by the macOS Dock or similar taskbars – we want the toast flush against the true
+    // screen edges.
+    const display = require('electron').screen.getDisplayNearestPoint({ x: hostWindow.getBounds().x, y: hostWindow.getBounds().y });
+    const displayBounds = display.bounds;
     bw.loadURL(url);
 
     bw.webContents.once('did-finish-load', () => {
       const [w, h] = bw.getSize();
-      bw.setPosition(workAreaSize.width - w - 4, workAreaSize.height - h - 4);
+      bw.setPosition(displayBounds.width - w - PADDING_X, displayBounds.height - h - PADDING_Y);
       bw.showInactive();
 
       // Inject styling & pulsating glow once content is ready
@@ -215,7 +227,7 @@ Toaster.prototype.init = function(hostWindow) {
       bw.webContents.insertCSS(css).catch(()=>{});
 
       activeToasts.push(bw);
-      relayout(workAreaSize.height);
+      relayout(displayBounds.height);
 
       // Start repeating alert sound if enabled
       if (REPEAT_SOUND) {
@@ -232,7 +244,7 @@ Toaster.prototype.init = function(hostWindow) {
     bw.on('closed', () => {
       const idx = activeToasts.indexOf(bw);
       if (idx !== -1) activeToasts.splice(idx,1);
-      relayout(workAreaSize.height);
+      relayout(displayBounds.height);
 
       // Stop alert sound loop for this toast
       if (soundTimer) {
