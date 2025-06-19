@@ -54,7 +54,15 @@ var Client = function (settings) {
 
     try {
         var persisted = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'))
-        this._headFromState = typeof persisted.highest === 'number' ? persisted.highest : null
+        // Always treat stored IDs as strings to avoid precision loss
+        if (persisted && typeof persisted.highest === 'string' && persisted.highest.length) {
+            this._headFromState = persisted.highest
+        } else if (persisted && typeof persisted.highest === 'number') {
+            // Legacy numeric storage – convert to string
+            this._headFromState = String(persisted.highest)
+        } else {
+            this._headFromState = null
+        }
     } catch (e) {
         this._headFromState = null
     }
@@ -63,12 +71,16 @@ var Client = function (settings) {
     this._saveLastProcessed = function (id) {
         if (!id) { return }
         try {
-            fs.writeFileSync(this.stateFile, JSON.stringify({ highest: id }), 'utf8')
+            fs.writeFileSync(this.stateFile, JSON.stringify({ highest: String(id) }), 'utf8')
         } catch (err) {
             // Non-fatal: just log
             this.logger.error('Failed to persist state file', err.stack || err)
         }
     }
+
+    // Used to avoid processing the first "new message" frame received immediately
+    // after logging in, because we already perform an explicit manual sync.
+    this.skipNextBang = false
 }
 
 module.exports = Client
@@ -99,6 +111,12 @@ Client.prototype.connect = function () {
         self.resetKeepAlive()
         wsClient.send('login:' + self.settings.deviceId + ':' + self.settings.secret + '\n')
 
+        // The server typically sends a "!" frame immediately after a successful
+        // login indicating there are messages waiting. Because we have already
+        // triggered an explicit refresh above, that first event would cause
+        // duplicate notifications. Skip the very next "!" frame that arrives.
+        self.skipNextBang = true
+
         // Kick off a periodic sync in case network hiccups drop websocket events
         clearInterval(self._pollInterval)
         self._pollInterval = setInterval(function () {
@@ -114,6 +132,10 @@ Client.prototype.connect = function () {
         switch (message) {
             // New message available – trigger sync
             case '!':
+                if (self.skipNextBang) {
+                    self.skipNextBang = false
+                    return
+                }
                 self.logger.log('Got new message event')
                 return self.refreshMessages()
 
@@ -204,7 +226,9 @@ Client.prototype.refreshMessages = function () {
     console.log('cuyler: refreshMessages')
     var self = this
 
-    self.logger.log('Refreshing messages')
+    // Diagnostic logging for poll cycles
+    var pollStart = Date.now()
+    self.logger.log('[Poll] Refreshing messages at', new Date(pollStart).toISOString())
 
     var options = {
         host: self.settings.apiHost
@@ -215,8 +239,12 @@ Client.prototype.refreshMessages = function () {
         })
     }
 
+    self.logger.log('[Poll] Request options:', options)
+
     var request = self.https.request(options, function (response) {
         var finalData = ''
+
+        self.logger.log('[Poll] Response statusCode:', response.statusCode)
 
         response.on('data', function (data) {
             finalData += data.toString()
@@ -231,7 +259,12 @@ Client.prototype.refreshMessages = function () {
 
             try {
                 var payload = JSON.parse(finalData)
-                console.log('cuyler: payload', payload)
+                // Detailed payload logging
+                self.logger.log('[Poll] Payload received:', JSON.stringify(payload))
+                if (payload && Array.isArray(payload.messages)) {
+                    var ids = payload.messages.map(function (m) { return m.id })
+                    self.logger.log('[Poll] Message IDs:', ids)
+                }
                 self.notify(payload.messages)
             } catch (error) {
                 self.logger.error('Failed to parse message payload')
@@ -311,7 +344,8 @@ Client.prototype.notify = function (messages) {
                         } else {
                             // Mark this message as successfully processed
                             lastSuccessful = message
-                            self._saveLastProcessed(message.id)
+                            // Use id_str to avoid losing precision
+                            self._saveLastProcessed(message.id_str || message.id)
                         }
 
                         // Continue with the next message regardless of success
@@ -409,12 +443,25 @@ Client.prototype.updateHead = function (message) {
         return
     }
 
-    self.logger.log('Updating head position to', message.id)
+    var messageId = message.id_str || message.id
+    if (!messageId) {
+        return
+    }
+    self.logger.log('Updating head position to', messageId)
+
+    var postData = querystring.stringify({
+        secret: self.settings.secret,
+        message: String(messageId)
+    })
 
     var options = {
-        host: self.settings.apiHost
-      , method: 'POST'
-      , path: self.settings.apiPath + '/devices/' + self.settings.deviceId + '/update_highest_message.json'
+        host: self.settings.apiHost,
+        method: 'POST',
+        path: self.settings.apiPath + '/devices/' + self.settings.deviceId + '/update_highest_message.json',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(postData)
+        }
     }
 
     var request = self.https.request(options, function (response) {
@@ -438,10 +485,7 @@ Client.prototype.updateHead = function (message) {
         self.logger.error(error.stack || error)
     })
 
-    request.write(querystring.stringify({
-        secret: self.settings.secret
-      , message: message.id
-    }) + '\n')
+    request.write(postData)
 
     request.end()
 }
