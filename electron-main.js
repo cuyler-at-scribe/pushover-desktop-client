@@ -223,8 +223,18 @@ Toaster.prototype.init = function(hostWindow) {
         }
         /* Accent stripe that also covers rounded corners */
         body::before{content:'';position:fixed;left:0;top:0;width:56px;height:100%;background:${accent};animation:pulseBG 1.5s ease-in-out infinite;pointer-events:none;}
+        /* Timestamp label */
+        .toast-timestamp{position:absolute;bottom:6px;right:10px;font-size:11px;color:#666;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
       `;
       bw.webContents.insertCSS(css).catch(()=>{});
+
+      // Add readable local-time timestamp in bottom-right corner
+      bw.webContents.executeJavaScript(`(function(){
+        const ts=document.createElement('div');
+        ts.className='toast-timestamp';
+        ts.textContent=new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit', hour12:true});
+        document.body.appendChild(ts);
+      })();`).catch(()=>{});
 
       activeToasts.push(bw);
       relayout(displayBounds.height);
