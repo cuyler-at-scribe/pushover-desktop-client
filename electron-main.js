@@ -32,7 +32,6 @@ function createNotifier() {
         timeout: 0, // never auto-dismiss
         focus: false   // don\'t steal focus
       };
-      console.log('[notifier] sending toast', toast);
       // build htmlFile to bypass electron-toaster bug
       const toasterHtmlPath = path.join(require.resolve('electron-toaster'), '..', 'toaster.html');
       toast.htmlFile = `file://${toasterHtmlPath}?title=${encodeURIComponent(payload.title||'')}&message=${encodeURIComponent((payload.message||'').replace(/<br>/g,' '))}&detail=&timeout=${toast.timeout}`;
@@ -72,25 +71,11 @@ async function createWindow() {
   // init toaster: attaches its own alwaysOnTop transparent window
   toaster.init(mainWindow);
 
-  // sanity test: show initial toast so user knows it works
-  // setTimeout(() => {
-  //   const test = { title: 'Pushover Client', message: 'Connected & waiting for messages', width: 380, timeout: 4000, focus: false };
-  //   console.log('[notifier] test toast');
-  //   ipcMain.emit('electron-toaster-message', null, test);
-  // }, 1000);
-
   // Load settings (wizard if needed) then run client
   const settings = await prepareSettings();
 
   const pdc = new PushoverDesktopClient(settings);
   pdc.connect();
-
-  // Optional mock toast for quick dev testing (skip network round-trip)
-  // setTimeout(() => {
-  //   console.log('[mock] firing demo notification');
-  //   const mock = { title: 'Mock Pushover', message: 'This is a mocked message fired on start' };
-  //   createNotifier().notify(mock);
-  // }, 1500);
 }
 
 app.whenReady().then(createWindow);

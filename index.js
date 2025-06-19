@@ -115,14 +115,11 @@ Client.prototype.connect = function () {
     })
 
     wsClient.on('message', function (event) {
-        console.log('cuyler: rcvd new message event')
-
         var message = event.toString('utf8')
 
         switch (message) {
             // New message available – trigger sync
             case '!':
-                console.log('cuyler: got new message event')
                 self.logger.log('Got new message event')
                 return self.refreshMessages()
 
@@ -210,7 +207,6 @@ Client.prototype.reconnect = function () {
  * Notifications will be generated for any new messages
  */
 Client.prototype.refreshMessages = function () {
-    console.log('cuyler: refreshMessages')
     var self = this
 
     // Diagnostic logging for poll cycles
