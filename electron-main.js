@@ -3,6 +3,8 @@ const path = require('path');
 const Toaster = require('electron-toaster');
 const PushoverDesktopClient = require('./index');
 const settingsHelper = require('./lib/settings');
+const { spawn } = require('child_process');
+const fs = require('fs');
 
 /***************************************************
  * This file bootstraps the existing Pushover client
@@ -16,6 +18,19 @@ const settingsHelper = require('./lib/settings');
 // ---------------------------------------------------------------------------
 let mainWindow;
 const toaster = new Toaster();
+
+// macOS: pick first existing system sound from candidates
+const MAC_SOUND_CANDIDATES = ['Submerge.aiff', 'Submarine.aiff', 'Funk.aiff'];
+let macSoundPath = null;
+if (process.platform === 'darwin') {
+  for (const fileName of MAC_SOUND_CANDIDATES) {
+    const candidate = `/System/Library/Sounds/${fileName}`;
+    if (fs.existsSync(candidate)) {
+      macSoundPath = candidate;
+      break;
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 2. node-notifier compatible adapter so that index.js can stay untouched
@@ -100,6 +115,11 @@ function relayout(displayHeight) {
   }
 }
 
+// Enable repeated alert sound if CLI flag is present
+const REPEAT_SOUND = process.argv.includes('--repeat-sound');
+// Gap between sound playbacks in milliseconds (platform-specific)
+const REPEAT_SOUND_GAP = process.platform === 'darwin' ? 3000 : 8000; // 3 s on macOS, 8 s elsewhere
+
 Toaster.prototype.init = function(hostWindow) {
   ipcMain.on('electron-toaster-message', (_event, msg) => {
     // Build correct URL
@@ -123,6 +143,24 @@ Toaster.prototype.init = function(hostWindow) {
       }
     });
 
+    // Helper to play alert sound (cross-platform best-effort)
+    function playAlertSound() {
+      try {
+        if (process.platform === 'darwin') {
+          const soundFile = macSoundPath || '/System/Library/Sounds/Funk.aiff';
+          spawn('afplay', [soundFile]);
+        } else if (process.platform === 'win32') {
+          spawn('powershell', ['-c', '[console]::beep(1000,500)']);
+        } else {
+          // Linux / others – attempt paplay fallback if available
+          spawn('paplay', ['/usr/share/sounds/freedesktop/stereo/bell.oga']);
+        }
+      } catch (_) {
+        // Swallow any playback errors – sound is best-effort
+      }
+    }
+    let soundTimer;
+
     // position bottom-right of same display as hostWindow
     const { workAreaSize } = require('electron').screen.getDisplayNearestPoint({ x: hostWindow.getBounds().x, y: hostWindow.getBounds().y });
     bw.loadURL(url);
@@ -134,6 +172,12 @@ Toaster.prototype.init = function(hostWindow) {
 
       activeToasts.push(bw);
       relayout(workAreaSize.height);
+
+      // Start repeating alert sound if enabled
+      if (REPEAT_SOUND) {
+        playAlertSound();
+        soundTimer = setInterval(playAlertSound, REPEAT_SOUND_GAP);
+      }
     });
 
     // close on click anywhere
@@ -145,6 +189,11 @@ Toaster.prototype.init = function(hostWindow) {
       const idx = activeToasts.indexOf(bw);
       if (idx !== -1) activeToasts.splice(idx,1);
       relayout(workAreaSize.height);
+
+      // Stop alert sound loop for this toast
+      if (soundTimer) {
+        clearInterval(soundTimer);
+      }
     });
   });
 }; 
